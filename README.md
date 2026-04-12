@@ -3,8 +3,6 @@ Updating weekly dm fadedfade_a on discord if you have issues
 This is a RAT controlled over Discord with over 20 post exploitation modules.
 
 
-# https://t.me/zenithOffical
-# https://discord.gg/YQngM65DQz
 ★ Leave a star 
 
 
