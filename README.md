@@ -1,5 +1,4 @@
 # Basic-Discord-Tool-Rat
-Updating weekly dm fadedfade_a on discord if you have issues 
 This is a RAT controlled over Discord with over 20 post exploitation modules.
 
 
