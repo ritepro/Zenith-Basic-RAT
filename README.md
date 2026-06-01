@@ -28,10 +28,12 @@ Python3,Windows(x64)
 ## **Modules**
 ```
 $active_window - Gets active window title.
+$blockscreen - Blocks the victim's screen and disables most keyboard shortcuts.
 $clipboard - Gets clipboard content.
+$delete - Permanently deletes a file (including from Recycle Bin).
 $drives - Lists connected drives.
-$grabpassword - Grabs saved passwords from browsers
-$help - None
+$grabpassword - Grabs saved passwords from browsers.
+$help - Shows available commands.
 $history - Gets browser history.
 $ip - Gets the computer's IP address.
 $kill - Forcefully kills a process.
@@ -43,15 +45,26 @@ $run - Runs a command or program.
 $screenshot - Takes a screenshot.
 $shutdown - Shuts down the computer.
 $sleep - Puts computer to sleep.
-$spam_site - Spams requests to a website.
-$startup - Adds program to startup.
+$spam_site - Spams opening websites in the browser.
+$startup - Adds program to startup (custom name supported).
+$steal - Steals a file and uploads it to Discord or gofile.io.
 $sysinfo - Gets system information.
+$take - Steals a file and uploads it to gofile.io.
 $tasklist - Lists all processes.
-$token - Grabs Discord token.
+$token - Grabs Discord tokens.
 $tree - Lists files in directory.
 $type - Types text.
+$unblockscreen - Unblocks the screen and restores input.
+$upload - Uploads a file from Discord to the victim's Downloads folder.
 $user - Gets information about the current user.
 $wifi_passwords - Gets WiFi passwords.
 ```
+
+**Total:** 28+ commands
+
+**Notes:**
+- Builder supports custom executable name and custom startup entry name.
+- Uses string salting/encryption during build for better evasion.
+- Session channels are reused when possible to avoid spamming.
 ## **Advice:**
 If you have problems contact devs or owner  :
