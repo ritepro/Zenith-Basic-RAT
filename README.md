@@ -1,5 +1,6 @@
 # Basic-Discord-Tool-Rat V3
 This is a RAT controlled over Discord with over 20 post exploitation modules.
+**100% OPEN SOURCE**
 
 
 ★ Leave a star 
